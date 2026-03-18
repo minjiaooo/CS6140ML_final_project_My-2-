@@ -1,7 +1,7 @@
 # CS6140ML_final_project_My-2-
 # Comparing Classical and Neural Models for Recommender Systems
 
-This repository contains the term project for [Course Name] at Northeastern University. We are comparing traditional Matrix Factorization against modern Two-Tower neural architectures using the Amazon Review Data (2018).
+This repository contains the term project for CS6140 Machine Learning(2026 spring) at Northeastern University. We are comparing traditional Matrix Factorization against modern Two-Tower neural architectures using the Amazon Review Data (2018).
 
 ## Team Members
 * **Minjia Fang** - fang.minj@northeastern.edu
