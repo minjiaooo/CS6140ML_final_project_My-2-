@@ -10,5 +10,5 @@ This repository contains the term project for CS6140 Machine Learning(2026 sprin
 
 ## Project Structure
 * `PROJECT_ABSTRACT.md`: Detailed project objectives, motivation, and scope.
-* `data/`: (To be added) Dataset scripts.
-* `models/`: (To be added) Implementation of MF and Two-Tower models.
+* `data/`: Amazon Review Data (2018), (https://nijianmo.github.io/amazon/index.html)
+* `models/`: Implementation of MF and Two-Tower models.
