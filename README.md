@@ -20,13 +20,8 @@ Comparing Matrix Factorization (MF) and Two-Tower models for implicit feedback r
 ├── model.py              # Two-Tower model (UserTower + ItemTower + BPR Loss)
 ├── train.py              # Two-Tower training + ablation study
 │
-├── colab_notebook.ipynb  # Google Colab experiment runner
-│
 └── data/
-    ├── processed/            # Musical Instruments (default)
-    ├── processed_cds/        # CDs & Vinyl
-    ├── processed_kindle/     # Kindle Store
-    └── processed_movies/     # Movies & TV
+    └── processed/            # Musical Instruments
 ```
 
 ## Quick Start
@@ -78,15 +73,12 @@ python train.py --ablation --lr 0.001 --reg_lambda 0.00001 --dropout 0.1 --n_epo
 - Metrics: HR@K (Hit Ratio), NDCG@K (Normalized Discounted Cumulative Gain)
 - K = 5, 10, 20
 
-## Datasets
-Amazon Review 5-core datasets:
+## Dataset
+Amazon Review 5-core dataset — Musical Instruments:
 
-| Dataset | Users | Items | Interactions | Avg/User |
-|---------|-------|-------|-------------|----------|
-| Musical Instruments | 24,780 | 9,930 | 156,681 | 6.3 |
-| CDs & Vinyl | 107,546 | 71,943 | 1,161,916 | 10.8 |
-| Kindle Store | 139,028 | 98,584 | 1,936,163 | 13.9 |
-| Movies & TV | 281,514 | 59,067 | 2,652,975 | 9.4 |
+| Users | Items | Interactions | Avg Interactions/User |
+|-------|-------|-------------|----------------------|
+| 24,780 | 9,930 | 156,681 | 6.3 |
 
 ## Results
 
