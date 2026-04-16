@@ -67,19 +67,48 @@ class MatrixFactorization(nn.Module):
     def forward(self, user_ids, pos_items, neg_items):
         """
         Training forward pass.
-        Returns scores for positive and negative items.
+        Supports both single and multiple negative samples per positive.
+
+        Args:
+            user_ids  : (B,)
+            pos_items : (B,)
+            neg_items : (B,) for single neg  OR  (B, K) for K negatives
+
+        Returns:
+            pos_scores : (B,)
+            neg_scores : (B,) if single neg  OR  (B, K) if K negatives
+            emb_dict   : dict of embeddings for L2 regularization (avoids re-lookup)
         """
-        u = self.user_emb(user_ids)
-        pos = self.item_emb(pos_items)
-        neg = self.item_emb(neg_items)
-        pos_scores = (u * pos).sum(dim=1)
-        neg_scores = (u * neg).sum(dim=1)
+        u = self.user_emb(user_ids)              # (B, D)
+        pos = self.item_emb(pos_items)            # (B, D)
+        neg = self.item_emb(neg_items)            # (B, D) or (B, K, D)
+
+        pos_scores = (u * pos).sum(dim=1)         # (B,)
+
+        if neg_items.dim() == 1:
+            neg_scores = (u * neg).sum(dim=1)                     # (B,)
+        else:
+            neg_scores = (u.unsqueeze(1) * neg).sum(dim=2)        # (B, K)
+
+        # Collect embeddings for regularization
+        emb_dict = {"u": u, "pos": pos, "neg": neg}
 
         if self.use_bias:
-            pos_scores += self.user_bias(user_ids).squeeze() + self.item_bias(pos_items).squeeze()
-            neg_scores += self.user_bias(user_ids).squeeze() + self.item_bias(neg_items).squeeze()
+            u_bias = self.user_bias(user_ids)                     # (B, 1)
+            pos_bias = self.item_bias(pos_items)                  # (B, 1)
+            neg_bias = self.item_bias(neg_items)                  # (B, 1) or (B, K, 1)
 
-        return pos_scores, neg_scores
+            pos_scores += u_bias.squeeze() + pos_bias.squeeze()
+            if neg_items.dim() == 1:
+                neg_scores += u_bias.squeeze() + neg_bias.squeeze()
+            else:
+                neg_scores += u_bias + neg_bias.squeeze(-1)       # (B, 1) + (B, K) broadcast
+
+            emb_dict["u_bias"] = u_bias
+            emb_dict["pos_bias"] = pos_bias
+            emb_dict["neg_bias"] = neg_bias
+
+        return pos_scores, neg_scores, emb_dict
 
     def get_user_vector(self, user_ids):
         return self.user_emb(user_ids)
@@ -108,15 +137,33 @@ class BPRLoss(nn.Module):
         super().__init__()
         self.reg_lambda = reg_lambda
 
-    def forward(self, pos_scores, neg_scores, model):
-        bpr_loss = -torch.log(
-            torch.sigmoid(pos_scores - neg_scores) + 1e-8
-        ).mean()
-        # L2 regularization on embeddings to prevent overfitting
-        if self.reg_lambda > 0:
-            reg_loss = model.user_emb.weight.norm(2).pow(2) + model.item_emb.weight.norm(2).pow(2)
-            if model.use_bias:
-                reg_loss += model.user_bias.weight.norm(2).pow(2) + model.item_bias.weight.norm(2).pow(2)
+    def forward(self, pos_scores, neg_scores, emb_dict=None):
+        # pos_scores: (B,)   neg_scores: (B,) or (B, K)
+        if neg_scores.dim() > 1:
+            # Multiple negatives: expand pos to broadcast against each neg
+            pos_expanded = pos_scores.unsqueeze(1)                  # (B, 1)
+            bpr_loss = -torch.log(
+                torch.sigmoid(pos_expanded - neg_scores) + 1e-8
+            ).mean()
+        else:
+            bpr_loss = -torch.log(
+                torch.sigmoid(pos_scores - neg_scores) + 1e-8
+            ).mean()
+
+        # L2 regularization on BATCH embeddings (reuse from forward, no re-lookup)
+        if self.reg_lambda > 0 and emb_dict is not None:
+            B = emb_dict["u"].size(0)
+            reg_loss = (
+                emb_dict["u"].norm(2).pow(2)
+                + emb_dict["pos"].norm(2).pow(2)
+                + emb_dict["neg"].norm(2).pow(2)
+            ) / B
+            if "u_bias" in emb_dict:
+                reg_loss += (
+                    emb_dict["u_bias"].norm(2).pow(2)
+                    + emb_dict["pos_bias"].norm(2).pow(2)
+                    + emb_dict["neg_bias"].norm(2).pow(2)
+                ) / B
             return bpr_loss + self.reg_lambda * reg_loss
         return bpr_loss
 
@@ -132,17 +179,27 @@ class BCELoss(nn.Module):
         self.reg_lambda = reg_lambda
         self.bce = nn.BCEWithLogitsLoss()
 
-    def forward(self, pos_scores, neg_scores, model):
-        scores = torch.cat([pos_scores, neg_scores])
+    def forward(self, pos_scores, neg_scores, emb_dict=None):
+        # Flatten neg_scores to 1D if multi-neg: (B, K) -> (B*K,)
+        scores = torch.cat([pos_scores, neg_scores.reshape(-1)])
         labels = torch.cat([
             torch.ones_like(pos_scores),
-            torch.zeros_like(neg_scores)
+            torch.zeros_like(neg_scores.reshape(-1))
         ])
         bce_loss = self.bce(scores, labels)
-        if self.reg_lambda > 0:
-            reg_loss = model.user_emb.weight.norm(2).pow(2) + model.item_emb.weight.norm(2).pow(2)
-            if model.use_bias:
-                reg_loss += model.user_bias.weight.norm(2).pow(2) + model.item_bias.weight.norm(2).pow(2)
+        if self.reg_lambda > 0 and emb_dict is not None:
+            B = emb_dict["u"].size(0)
+            reg_loss = (
+                emb_dict["u"].norm(2).pow(2)
+                + emb_dict["pos"].norm(2).pow(2)
+                + emb_dict["neg"].norm(2).pow(2)
+            ) / B
+            if "u_bias" in emb_dict:
+                reg_loss += (
+                    emb_dict["u_bias"].norm(2).pow(2)
+                    + emb_dict["pos_bias"].norm(2).pow(2)
+                    + emb_dict["neg_bias"].norm(2).pow(2)
+                ) / B
             return bce_loss + self.reg_lambda * reg_loss
         return bce_loss
 
@@ -164,6 +221,7 @@ def train(config, output_dir="./results/mf"):
     train_loader, val_loader, test_loader, n_users, n_items = build_dataloaders(
         data_dir=config["data_dir"],
         batch_size=config["batch_size"],
+        n_neg_train=config.get("n_neg_train", 1),
     )
 
     model = MatrixFactorization(
@@ -197,8 +255,8 @@ def train(config, output_dir="./results/mf"):
             users = users.to(device)
             pos_items = pos_items.to(device)
             neg_items = neg_items.to(device)
-            pos_scores, neg_scores = model(users, pos_items, neg_items)
-            loss = criterion(pos_scores, neg_scores, model)
+            pos_scores, neg_scores, emb_dict = model(users, pos_items, neg_items)
+            loss = criterion(pos_scores, neg_scores, emb_dict=emb_dict)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -276,19 +334,22 @@ def main():
     parser.add_argument("--patience",    type=int,   default=10)
     parser.add_argument("--k_list",      type=int,   nargs="+", default=[5, 10, 20])
     parser.add_argument("--use_bias",    action="store_true",   default=False)
+    parser.add_argument("--n_neg_train", type=int,   default=1,
+                        help="Number of negative samples per positive during training")
     args = parser.parse_args()
 
     config = {
-        "data_dir":   args.data_dir,
-        "embed_dim":  args.embed_dim,
-        "loss":       args.loss,
-        "lr":         args.lr,
-        "reg_lambda": args.reg_lambda,
-        "batch_size": args.batch_size,
-        "n_epochs":   args.n_epochs,
-        "patience":   args.patience,
-        "k_list":     args.k_list,
-        "use_bias":   args.use_bias,
+        "data_dir":     args.data_dir,
+        "embed_dim":    args.embed_dim,
+        "loss":         args.loss,
+        "lr":           args.lr,
+        "reg_lambda":   args.reg_lambda,
+        "batch_size":   args.batch_size,
+        "n_epochs":     args.n_epochs,
+        "patience":     args.patience,
+        "k_list":       args.k_list,
+        "use_bias":     args.use_bias,
+        "n_neg_train":  args.n_neg_train,
     }
 
     train(config, output_dir=args.results_dir)

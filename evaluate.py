@@ -78,16 +78,18 @@ def evaluate(model, loader, device, k_list=[5, 10, 20]):
         pos_items = pos_items.to(device)
         neg_items = neg_items.to(device)
 
-        u_vec   = model.get_user_vector(users)          # (B, dim)
-        pos_vec = model.get_item_vectors(pos_items)     # (B, dim)
-        neg_vec = model.get_item_vectors(neg_items)     # (B, 99, dim)
+        u_vec = model.get_user_vector(users)                        # (B, dim)
 
-        # Positive sample score
-        pos_scores = (u_vec * pos_vec).sum(dim=1, keepdim=True)     # (B, 1)
-        # Negative sample scores
-        neg_scores = (u_vec.unsqueeze(1) * neg_vec).sum(dim=2)      # (B, 99)
-        # Concatenate: column 0 = positive, columns 1-99 = negatives
-        batch_scores = torch.cat([pos_scores, neg_scores], dim=1)   # (B, 100)
+        # Combine pos and neg items, pass through item tower TOGETHER
+        # so that LayerNorm sees the same batch statistics for both
+        all_items = torch.cat([pos_items.unsqueeze(1), neg_items], dim=1)  # (B, 100)
+        B, N = all_items.shape
+        all_items_flat = all_items.reshape(-1)                      # (B*100,)
+        all_vec = model.get_item_vectors(all_items_flat)            # (B*100, dim)
+        all_vec = all_vec.reshape(B, N, -1)                         # (B, 100, dim)
+
+        # Scores: column 0 = positive, columns 1-99 = negatives
+        batch_scores = (u_vec.unsqueeze(1) * all_vec).sum(dim=2)    # (B, 100)
         all_scores.append(batch_scores.cpu().numpy())
 
     all_scores = np.vstack(all_scores)   # (n_users, 100)

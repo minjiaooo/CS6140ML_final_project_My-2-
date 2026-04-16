@@ -51,14 +51,13 @@ class Tower(nn.Module):
         layers = []
         for _ in range(n_layers):
             layers.append(nn.Linear(embed_dim, embed_dim))
-            layers.append(nn.BatchNorm1d(embed_dim))
+            layers.append(nn.LayerNorm(embed_dim))
             layers.append(act_fn())
             layers.append(nn.Dropout(dropout))
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, x):
         x = self.mlp(x)
-        x = F.normalize(x, p=2, dim=-1)
         return x
 
 
@@ -115,34 +114,45 @@ class TwoTowerModel(nn.Module):
     def forward(self, user_ids, pos_items, neg_items):
         """
         Training forward pass.
+        Supports both single and multiple negative samples per positive.
 
         Args:
             user_ids  : (B,)
             pos_items : (B,)
-            neg_items : (B, K)  K = n_neg_train (default: 1 during training)
+            neg_items : (B,) for single neg  OR  (B, K) for K negatives
 
         Returns:
             pos_scores : (B,)
-            neg_scores : (B, K)
+            neg_scores : (B,) if single neg  OR  (B, K) if K negatives
+            emb_dict   : dict of embeddings for L2 regularization (avoids re-lookup)
         """
-        # User vector
-        u_vec = self.user_tower(self.user_emb(user_ids))        # (B, embed_dim)
+        # Raw embeddings (before tower) — saved for regularization
+        u_raw = self.user_emb(user_ids)                         # (B, D)
+        pos_raw = self.item_emb(pos_items)                      # (B, D)
+        neg_raw = self.item_emb(neg_items)                      # (B, D) or (B, K, D)
 
-        # Positive item vector
-        pos_vec = self.item_tower(self.item_emb(pos_items))     # (B, embed_dim)
+        # User vector through tower
+        u_vec = self.user_tower(u_raw)                          # (B, D)
 
-        # Negative item vectors — reshape to pass through Tower (requires 2D input)
-        B, K = neg_items.shape
-        neg_vec = self.item_emb(neg_items)                      # (B, K, embed_dim)
-        neg_vec = neg_vec.reshape(B * K, -1)                    # (B*K, embed_dim)
-        neg_vec = self.item_tower(neg_vec)                      # (B*K, embed_dim)
-        neg_vec = neg_vec.reshape(B, K, -1)                     # (B, K, embed_dim)
+        # Positive item vector through tower
+        pos_vec = self.item_tower(pos_raw)                      # (B, D)
 
-        # Dot product scores (= cosine similarity after L2 norm)
-        pos_scores = torch.sum(u_vec * pos_vec, dim=1)                  # (B,)
-        neg_scores = torch.sum(u_vec.unsqueeze(1) * neg_vec, dim=2)     # (B, K)
+        # Negative item vectors through tower
+        if neg_items.dim() == 1:
+            neg_vec = self.item_tower(neg_raw)                  # (B, D)
+            neg_scores = torch.sum(u_vec * neg_vec, dim=1)      # (B,)
+        else:
+            B, K = neg_items.shape
+            neg_vec = self.item_tower(neg_raw.reshape(B * K, -1))   # (B*K, D)
+            neg_vec = neg_vec.reshape(B, K, -1)                     # (B, K, D)
+            neg_scores = torch.sum(u_vec.unsqueeze(1) * neg_vec, dim=2)  # (B, K)
 
-        return pos_scores, neg_scores
+        pos_scores = torch.sum(u_vec * pos_vec, dim=1)          # (B,)
+
+        # Collect raw embeddings for regularization (same as MF interface)
+        emb_dict = {"u": u_raw, "pos": pos_raw, "neg": neg_raw}
+
+        return pos_scores, neg_scores, emb_dict
 
     def get_user_vector(self, user_ids):
         """Called by evaluate.py"""

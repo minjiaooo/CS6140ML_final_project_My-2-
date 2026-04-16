@@ -55,24 +55,23 @@ class TrainDataset(Dataset):
 
     def __getitem__(self, idx):
         """
-        Return one training sample: (user, pos_item, neg_item)
+        Return one training sample: (user, pos_item, neg_items)
+        neg_items shape: (n_neg,)
         """
         user, pos_item = self.samples[idx]
 
-        # Negative sampling: randomly pick an item the user has not interacted with
-        # Set a max retry limit to avoid infinite loops when users have many interactions
-        max_tries = self.n_items * 2
-        neg_item = random.randint(0, self.n_items - 1)
-        for _ in range(max_tries):
-            if neg_item not in self.user_item_set[user]:
-                break
-            neg_item = random.randint(0, self.n_items - 1)
+        # Negative sampling: randomly pick n_neg items the user has not interacted with
+        neg_items = []
+        while len(neg_items) < self.n_neg:
+            neg = random.randint(0, self.n_items - 1)
+            if neg not in self.user_item_set[user]:
+                neg_items.append(neg)
 
         # Return tensors, as PyTorch models only accept tensor types
         return (
             torch.tensor(user, dtype=torch.long),
             torch.tensor(pos_item, dtype=torch.long),
-            torch.tensor(neg_item, dtype=torch.long),
+            torch.tensor(neg_items, dtype=torch.long),
         )
 
 
@@ -120,6 +119,7 @@ class EvalDataset(Dataset):
                 self.user_item_set[user].add(item)
 
         # Precompute negative samples 
+        random.seed(42)
         self.neg_samples = {}
         for user, pos_item in self.samples:
             negs = []
@@ -204,12 +204,12 @@ def build_dataloaders(
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=256,
+        batch_size=1024,
         shuffle=False,
     )
     test_loader = DataLoader(
         test_dataset,
-        batch_size=256,
+        batch_size=1024,
         shuffle=False,
     )
 

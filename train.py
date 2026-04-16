@@ -32,27 +32,34 @@ class BPRLoss(nn.Module):
     Bayesian Personalized Ranking Loss.
     loss = -log(sigmoid(pos_score - neg_score))
 
-    neg_scores shape: (B, K) — average over all K negatives per user.
+    Uses batch-level L2 regularization on embeddings passed via emb_dict,
+    consistent with MF baseline for fair comparison.
     """
 
     def __init__(self, reg_lambda: float = 1e-3):
         super().__init__()
         self.reg_lambda = reg_lambda
 
-    def forward(self, pos_scores, neg_scores, model):
-        # pos_scores: (B,)   neg_scores: (B, K)
-        # Expand pos to compare against each negative
-        pos_expanded = pos_scores.unsqueeze(1)                          # (B, 1)
-        bpr_loss = -torch.log(
-            torch.sigmoid(pos_expanded - neg_scores) + 1e-8
-        ).mean()
+    def forward(self, pos_scores, neg_scores, emb_dict=None):
+        # pos_scores: (B,)   neg_scores: (B,) or (B, K)
+        if neg_scores.dim() > 1:
+            pos_expanded = pos_scores.unsqueeze(1)                      # (B, 1)
+            bpr_loss = -torch.log(
+                torch.sigmoid(pos_expanded - neg_scores) + 1e-8
+            ).mean()
+        else:
+            bpr_loss = -torch.log(
+                torch.sigmoid(pos_scores - neg_scores) + 1e-8
+            ).mean()
 
-        # L2 regularization on embeddings
-        if self.reg_lambda > 0:
+        # L2 regularization on BATCH embeddings (reuse from forward, no re-lookup)
+        if self.reg_lambda > 0 and emb_dict is not None:
+            B = emb_dict["u"].size(0)
             reg_loss = (
-                model.user_emb.weight.norm(2).pow(2)
-                + model.item_emb.weight.norm(2).pow(2)
-            )
+                emb_dict["u"].norm(2).pow(2)
+                + emb_dict["pos"].norm(2).pow(2)
+                + emb_dict["neg"].norm(2).pow(2)
+            ) / B
             return bpr_loss + self.reg_lambda * reg_loss
         return bpr_loss
 
@@ -76,6 +83,7 @@ def train(config: dict, output_dir: str = "./results/two_tower"):
     train_loader, val_loader, test_loader, n_users, n_items = build_dataloaders(
         data_dir=config["data_dir"],
         batch_size=config["batch_size"],
+        n_neg_train=config.get("n_neg_train", 1),
     )
 
     model = TwoTowerModel(
@@ -110,10 +118,10 @@ def train(config: dict, output_dir: str = "./results/two_tower"):
         for users, pos_items, neg_items in train_loader:
             users     = users.to(device)
             pos_items = pos_items.to(device)
-            neg_items = neg_items.unsqueeze(1).to(device)   # (B,) -> (B, 1)
+            neg_items = neg_items.to(device)   # (B, n_neg) from dataset
 
-            pos_scores, neg_scores = model(users, pos_items, neg_items)
-            loss = criterion(pos_scores, neg_scores, model)
+            pos_scores, neg_scores, emb_dict = model(users, pos_items, neg_items)
+            loss = criterion(pos_scores, neg_scores, emb_dict=emb_dict)
 
             optimizer.zero_grad()
             loss.backward()
@@ -137,6 +145,10 @@ def train(config: dict, output_dir: str = "./results/two_tower"):
             f"NDCG@10={val_ndcg10:.4f} | "
             f"{time.time()-t0:.1f}s"
         )
+
+        if epoch <= config.get("warmup_epochs", 3):
+            # Warmup: train but don't track best model
+            continue
 
         if val_hr10 > best_hr10:
             best_hr10, best_ndcg10 = val_hr10, val_ndcg10
@@ -260,22 +272,28 @@ def main():
     parser.add_argument("--n_epochs",    type=int,   default=50)
     parser.add_argument("--patience",    type=int,   default=10)
     parser.add_argument("--k_list",      type=int,   nargs="+", default=[5, 10, 20])
+    parser.add_argument("--n_neg_train", type=int,   default=1,
+                        help="Number of negative samples per positive during training")
+    parser.add_argument("--warmup_epochs", type=int, default=3,
+                        help="Number of warmup epochs before tracking best model")
     parser.add_argument("--ablation",    action="store_true",
                         help="Run full ablation study")
     args = parser.parse_args()
 
     config = {
-        "data_dir":   args.data_dir,
-        "embed_dim":  args.embed_dim,
-        "n_layers":   args.n_layers,
-        "activation": args.activation,
-        "dropout":    args.dropout,
-        "lr":         args.lr,
-        "reg_lambda": args.reg_lambda,
-        "batch_size": args.batch_size,
-        "n_epochs":   args.n_epochs,
-        "patience":   args.patience,
-        "k_list":     args.k_list,
+        "data_dir":      args.data_dir,
+        "embed_dim":     args.embed_dim,
+        "n_layers":      args.n_layers,
+        "activation":    args.activation,
+        "dropout":       args.dropout,
+        "lr":            args.lr,
+        "reg_lambda":    args.reg_lambda,
+        "batch_size":    args.batch_size,
+        "n_epochs":      args.n_epochs,
+        "patience":      args.patience,
+        "k_list":        args.k_list,
+        "n_neg_train":   args.n_neg_train,
+        "warmup_epochs": args.warmup_epochs,
     }
 
     if args.ablation:
