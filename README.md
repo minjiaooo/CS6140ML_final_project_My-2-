@@ -1,7 +1,5 @@
 # Comparing Classical and Neural Models for Recommender Systems
 
-CS6140 Machine Learning Final Project — Northeastern University
-
 ## Project Overview
 
 Comparing Matrix Factorization (MF) and Two-Tower models for implicit feedback recommendation on Amazon Review datasets. Both models share the same data pipeline, evaluation protocol, and loss function implementation, ensuring a fair controlled comparison.
